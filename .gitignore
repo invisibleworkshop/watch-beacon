@@ -17,6 +17,12 @@ xcuserdata/
 Packages/
 Package.resolved
 
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
 # macOS
 .DS_Store
 **/.DS_Store
