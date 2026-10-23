@@ -1,0 +1,27 @@
+# Xcode
+WatchGPSBridge.xcodeproj/
+DerivedData/
+build/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package
+.swiftpm/
+Packages/
+Package.resolved
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDE
+.idea/
+*.swp
+*~
