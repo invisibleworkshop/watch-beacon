@@ -79,7 +79,14 @@ JSON 結構：
 }
 ```
 
-## Mac：依照片時間寫入 EXIF GPS
+## Mac App：修正時區 + 對應 GPS
+
+照片 EXIF 時區常是錯的（例如人在 GMT+9，相機仍標 GMT+8）。用 App 指定：
+
+1. **軌跡目錄**（iCloud `Tracks`）
+2. **照片目錄**
+3. **原時區 / 目標時區**（例 GMT+8 → GMT+9）
+4. 寫回 EXIF：**DateTime / DateTimeOriginal / DateTimeDigitized**、**OffsetTime\***，以及對到的 **GPS**
 
 ```bash
 cd /path/to/this/repo
@@ -87,31 +94,31 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r tools/requirements.txt
 
-# 先 dry-run 預覽
-python tools/geotag_photos.py \
-  --tracks "$HOME/Library/Mobile Documents/iCloud~com~watchgpsbridge~app/Documents/Tracks" \
-  --photos ~/Pictures/MyTrip \
-  --max-delta-seconds 300 \
-  --recursive
+# 圖形介面（建議）
+python tools/geotag_app.py
+```
 
-# 確認無誤後實際寫入
+時區模式：
+
+| 模式 | 例子 | 用途 |
+|------|------|------|
+| **保持牆上時間，改套目標時區**（預設） | `12:00+8` → `12:00+9` | 時區標籤錯了，當地牆上時間其實正確 |
+| **同一瞬間換算** | `12:00+8` → `13:00+9` | 絕對時間不變，只換顯示時區 |
+
+先不要勾「實際寫入」可預覽；確認後再寫入（會改原檔，請先備份）。
+
+CLI 同等功能：
+
+```bash
 python tools/geotag_photos.py \
   --tracks "$HOME/Library/Mobile Documents/iCloud~com~watchgpsbridge~app/Documents/Tracks" \
   --photos ~/Pictures/MyTrip \
-  --max-delta-seconds 300 \
+  --source-tz GMT+8 \
+  --target-tz GMT+9 \
+  --mode retag \
   --recursive \
   --write
 ```
-
-行為：
-
-- 讀取所有軌跡 JSON，依時間排序
-- 讀每張照片的 EXIF 拍攝時間（`DateTimeOriginal` 等）
-- 找時間差在 `--max-delta-seconds` 內最近的 GPS 點
-- 寫入 EXIF GPS（緯度／經度／海拔）
-- 支援 JPEG／TIFF；HEIC 需 `pillow-heif`（建議重要底片先備份）
-
-未加 `--write` 時只預覽，不改檔。
 
 ## 捷徑自動化
 
@@ -127,7 +134,9 @@ Watch **無法**可靠用捷徑固定啟動 App。請只自動化 iPhone：
 Shared/                 共用模型
 WatchGPSBridge/         iPhone（接收、iCloud 輪轉存檔、通知、Intent）
 WatchGPSBridgeWatch/    Watch Companion
-tools/geotag_photos.py  Mac 端照片 geotag
+tools/geotag_app.py      Mac 圖形 App（目錄 + 時區 + 寫入 EXIF）
+tools/geotag_photos.py  同等 CLI
+tools/geotag_lib.py     核心邏輯
 tools/requirements.txt
 project.yml
 ```
@@ -136,7 +145,7 @@ project.yml
 
 - 每檔點數：`LocationRecorder.pointsPerFile`（預設 10000）
 - 斷線門檻：`StaleSignalMonitor.staleThreshold`（預設 60 秒）
-- 照片匹配容許差：`--max-delta-seconds`（預設 300）
+- 照片匹配容許差：App／`--max-delta-seconds`（預設 300）
 
 ## 限制
 
