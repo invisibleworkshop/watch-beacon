@@ -6,25 +6,21 @@ public struct TrackChunkFile: Codable, Sendable {
     public static let pointsPerFile = 10_000
 
     public let schemaVersion: Int
-    public let source: String
-    public let chunkIndex: Int
-    public let startedAt: Date
-    public let closedAt: Date?
+    public let pointsPerFile: Int
+    public let createdAt: Date
+    public let pointCount: Int
     public let points: [GPSPoint]
 
     public init(
         schemaVersion: Int = TrackChunkFile.currentSchemaVersion,
-        source: String = "apple-watch",
-        chunkIndex: Int,
-        startedAt: Date,
-        closedAt: Date? = nil,
+        pointsPerFile: Int = TrackChunkFile.pointsPerFile,
+        createdAt: Date = Date(),
         points: [GPSPoint]
     ) {
         self.schemaVersion = schemaVersion
-        self.source = source
-        self.chunkIndex = chunkIndex
-        self.startedAt = startedAt
-        self.closedAt = closedAt
+        self.pointsPerFile = pointsPerFile
+        self.createdAt = createdAt
+        self.pointCount = points.count
         self.points = points
     }
 }
@@ -32,5 +28,5 @@ public struct TrackChunkFile: Codable, Sendable {
 public enum StorageKeys {
     /// Must match Xcode iCloud container id / entitlements.
     public static let iCloudContainer = "iCloud.com.watchgpsbridge.app"
-    public static let tracksFolderName = "WatchGPSTracks"
+    public static let tracksFolderName = "Tracks"
 }

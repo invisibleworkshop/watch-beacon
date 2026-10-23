@@ -1,14 +1,12 @@
 import Foundation
 
 /// Continuously records Watch GPS into rotating JSON files on iCloud Drive
-/// (one new file every ``pointsPerFile`` points) so a Mac can process them later.
+/// (one new file every ``TrackChunkFile.pointsPerFile`` points) so a Mac can process them later.
 @MainActor
 final class LocationRecorder: ObservableObject {
     static let shared = LocationRecorder()
 
-    static let pointsPerFile = 10_000
-    static let iCloudContainerId = "iCloud.com.watchgpsbridge.app"
-    static let tracksFolderName = "Tracks"
+    static var pointsPerFile: Int { TrackChunkFile.pointsPerFile }
 
     @Published private(set) var recentPoints: [GPSPoint] = []
     @Published private(set) var currentFilePointCount = 0
@@ -31,7 +29,6 @@ final class LocationRecorder: ObservableObject {
         return encoder
     }()
 
-    /// Kept for any UI that still binds to `points`.
     var points: [GPSPoint] { recentPoints }
 
     private init() {
@@ -47,7 +44,6 @@ final class LocationRecorder: ObservableObject {
         let oldURL = currentFileURL
         resolveStorageDirectory()
         if wasLocal, isUsingiCloud, let oldURL {
-            // Continue the same in-memory batch under a new iCloud file.
             persistCurrentFile()
             try? FileManager.default.removeItem(at: oldURL)
         } else if currentFileURL == nil {
@@ -91,11 +87,11 @@ final class LocationRecorder: ObservableObject {
     private func resolveStorageDirectory() {
         lastError = nil
         if let iCloudRoot = FileManager.default.url(
-            forUbiquityContainerIdentifier: Self.iCloudContainerId
+            forUbiquityContainerIdentifier: StorageKeys.iCloudContainer
         ) {
             let tracks = iCloudRoot
                 .appendingPathComponent("Documents", isDirectory: true)
-                .appendingPathComponent(Self.tracksFolderName, isDirectory: true)
+                .appendingPathComponent(StorageKeys.tracksFolderName, isDirectory: true)
             ensureDirectory(tracks)
             tracksDirectory = tracks
             isUsingiCloud = true
@@ -104,7 +100,7 @@ final class LocationRecorder: ObservableObject {
         }
 
         let local = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(Self.tracksFolderName, isDirectory: true)
+            .appendingPathComponent(StorageKeys.tracksFolderName, isDirectory: true)
         ensureDirectory(local)
         tracksDirectory = local
         isUsingiCloud = false
@@ -147,13 +143,7 @@ final class LocationRecorder: ObservableObject {
 
     private func persistCurrentFile() {
         guard let currentFileURL else { return }
-        let document = TrackFileDocument(
-            schemaVersion: 1,
-            pointsPerFile: Self.pointsPerFile,
-            createdAt: Date(),
-            pointCount: currentBatch.count,
-            points: currentBatch
-        )
+        let document = TrackChunkFile(createdAt: Date(), points: currentBatch)
         do {
             let data = try encoder.encode(document)
             try data.write(to: currentFileURL, options: [.atomic])
@@ -176,13 +166,4 @@ final class LocationRecorder: ObservableObject {
         let trackFiles = files.filter { $0.pathExtension.lowercased() == "json" }
         completedFileCount = trackFiles.filter { $0.lastPathComponent != currentFileName }.count
     }
-}
-
-/// On-disk JSON schema for Mac-side processing.
-struct TrackFileDocument: Codable, Sendable {
-    let schemaVersion: Int
-    let pointsPerFile: Int
-    let createdAt: Date
-    let pointCount: Int
-    let points: [GPSPoint]
 }
