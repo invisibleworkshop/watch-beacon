@@ -216,7 +216,7 @@ struct ContentView: View {
             Text("Mac 處理")
                 .font(.headline)
                 .padding(.top, 8)
-            Text("軌跡同步到 iCloud 後，在 Mac 執行 tools/geotag_photos.py，依照片 EXIF 時間寫入 GPS。")
+            Text("軌跡同步到 iCloud 後，在 Mac 執行 python tools/geotag_app.py：選軌跡／照片目錄與時區，修正 EXIF 時間後寫入 GPS。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
