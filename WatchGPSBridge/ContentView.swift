@@ -78,7 +78,50 @@ struct ContentView: View {
                     .font(.footnote)
                     .foregroundStyle(Color("AlertClay"))
             }
+
+            storageSection
         }
+    }
+
+    private var storageSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("儲存")
+                .font(.headline)
+            statusRow(
+                title: "位置",
+                value: recorder.isUsingiCloud ? "iCloud" : "本機暫存",
+                ok: recorder.isUsingiCloud
+            )
+            Text(recorder.storageDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            statusRow(
+                title: "目前檔案",
+                value: "\(recorder.currentFilePointCount) / \(LocationRecorder.pointsPerFile)",
+                ok: true
+            )
+            if let name = recorder.currentFileName {
+                Text(name)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            statusRow(
+                title: "已完成檔案",
+                value: "\(recorder.completedFileCount)",
+                ok: true
+            )
+            statusRow(
+                title: "累計點位",
+                value: "\(recorder.totalPointsRecorded)",
+                ok: true
+            )
+            if let error = recorder.lastError {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(Color("AlertClay"))
+            }
+        }
+        .padding(.top, 8)
     }
 
     private var lastSignalLabel: String {
@@ -125,8 +168,8 @@ struct ContentView: View {
                 .buttonStyle(SecondaryButtonStyle())
             }
 
-            Button("清除本機軌跡", role: .destructive) {
-                recorder.clear()
+            Button("清除畫面緩衝（不刪 iCloud 檔）", role: .destructive) {
+                recorder.clearRecentBuffer()
             }
             .font(.footnote)
         }
@@ -135,19 +178,19 @@ struct ContentView: View {
     private var recentPoints: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("已記錄點位")
+                Text("最近點位")
                     .font(.headline)
                 Spacer()
-                Text("\(recorder.points.count)")
+                Text("緩衝 \(recorder.recentPoints.count)")
                     .foregroundStyle(.secondary)
             }
 
-            if recorder.points.isEmpty {
+            if recorder.recentPoints.isEmpty {
                 Text("尚未收到 Watch GPS。按下上方按鈕，或用捷徑打開本 App。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(recorder.points.suffix(8).reversed()) { point in
+                ForEach(recorder.recentPoints.suffix(8).reversed()) { point in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(String(format: "%.5f, %.5f  ·  ±%.1fm", point.latitude, point.longitude, point.horizontalAccuracy))
                             .font(.system(.caption, design: .monospaced))
@@ -170,6 +213,12 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
             Text("URL Scheme：watchgpsbridge://start")
                 .font(.system(.caption, design: .monospaced))
+            Text("Mac 處理")
+                .font(.headline)
+                .padding(.top, 8)
+            Text("軌跡同步到 iCloud 後，在 Mac 執行 tools/geotag_photos.py，依照片 EXIF 時間寫入 GPS。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
         .padding(.bottom, 24)
     }

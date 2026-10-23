@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "pointsPerFile": 10000,
+  "createdAt": "2026-10-23T04:00:00Z",
+  "pointCount": 3,
+  "points": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "latitude": 25.033964,
+      "longitude": 121.564468,
+      "altitude": 12.5,
+      "horizontalAccuracy": 4.0,
+      "verticalAccuracy": 3.0,
+      "speed": 1.2,
+      "course": 90.0,
+      "timestamp": "2026-10-23T04:10:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "latitude": 25.034100,
+      "longitude": 121.564800,
+      "altitude": 13.0,
+      "horizontalAccuracy": 5.0,
+      "verticalAccuracy": 3.0,
+      "speed": 1.4,
+      "course": 95.0,
+      "timestamp": "2026-10-23T04:10:30Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "latitude": 25.034400,
+      "longitude": 121.565100,
+      "altitude": 13.2,
+      "horizontalAccuracy": 4.5,
+      "verticalAccuracy": 3.0,
+      "speed": 1.1,
+      "course": 100.0,
+      "timestamp": "2026-10-23T04:11:00Z"
+    }
+  ]
+}
