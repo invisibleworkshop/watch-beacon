@@ -51,9 +51,10 @@ struct WatchContentView: View {
                 }
 
                 if let error = location.lastError ?? session.lastError {
+                    let acquiring = error.contains("正在取得 GPS")
                     Text(error)
                         .font(.caption2)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(acquiring ? Color.secondary : Color.red)
                 }
             }
             .padding(.horizontal, 4)

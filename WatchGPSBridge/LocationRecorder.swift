@@ -20,6 +20,7 @@ final class LocationRecorder: ObservableObject {
     private var currentBatch: [GPSPoint] = []
     private var tracksDirectory: URL?
     private var currentFileURL: URL?
+    private var currentFileCreatedAt = Date()
     private var iCloudRetryAttempts = 0
 
     private let encoder: JSONEncoder = {
@@ -29,11 +30,25 @@ final class LocationRecorder: ObservableObject {
         return encoder
     }()
 
+    private let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
+    private enum PersistenceKey {
+        static let activeFileName = "watchgpsbridge.activeTrackFileName"
+        static let totalPoints = "watchgpsbridge.totalPointsRecorded"
+    }
+
     var points: [GPSPoint] { recentPoints }
 
     private init() {
         resolveStorageDirectory()
-        startNewFile()
+        if !resumeOpenFileIfPossible() {
+            startNewFile()
+        }
+        recalculateTotalsFromDisk()
         if !isUsingiCloud {
             scheduleiCloudRetry()
         }
@@ -42,14 +57,27 @@ final class LocationRecorder: ObservableObject {
     func prepareStorage() {
         let wasLocal = !isUsingiCloud
         let oldURL = currentFileURL
+        let hadOnlyEmptyLocal = wasLocal && currentBatch.isEmpty
         resolveStorageDirectory()
         if wasLocal, isUsingiCloud, let oldURL {
-            persistCurrentFile()
+            if !currentBatch.isEmpty {
+                persistCurrentFile()
+            }
             try? FileManager.default.removeItem(at: oldURL)
+            // Cold start often resolves iCloud late — pick up the open track there.
+            if hadOnlyEmptyLocal || currentBatch.isEmpty {
+                currentFileURL = nil
+                currentFileName = nil
+                if !resumeOpenFileIfPossible() {
+                    startNewFile()
+                }
+            }
         } else if currentFileURL == nil {
-            startNewFile()
+            if !resumeOpenFileIfPossible() {
+                startNewFile()
+            }
         }
-        refreshCompletedFileCount()
+        recalculateTotalsFromDisk()
     }
 
     func append(_ batch: [GPSPoint]) {
@@ -58,7 +86,19 @@ final class LocationRecorder: ObservableObject {
             prepareStorage()
         }
 
+        var knownIDs = Set(currentBatch.map(\.id)).union(Set(recentPoints.map(\.id)))
+
         for point in batch {
+            // WatchConnectivity can deliver the same batch twice (message + context/userInfo).
+            if knownIDs.contains(point.id) { continue }
+            if let last = currentBatch.last,
+               abs(point.timestamp.timeIntervalSince(last.timestamp)) < 0.05,
+               abs(point.latitude - last.latitude) < 1e-7,
+               abs(point.longitude - last.longitude) < 1e-7 {
+                continue
+            }
+            knownIDs.insert(point.id)
+
             currentBatch.append(point)
             totalPointsRecorded += 1
             currentFilePointCount = currentBatch.count
@@ -73,6 +113,7 @@ final class LocationRecorder: ObservableObject {
                 persistCurrentFile()
             }
         }
+        UserDefaults.standard.set(totalPointsRecorded, forKey: PersistenceKey.totalPoints)
     }
 
     /// Clears only the on-screen buffer. Completed iCloud track files are kept.
@@ -95,7 +136,7 @@ final class LocationRecorder: ObservableObject {
             ensureDirectory(tracks)
             tracksDirectory = tracks
             isUsingiCloud = true
-            storageDescription = "iCloud Drive → 腕上定位 → Documents → Tracks"
+            storageDescription = "iCloud Drive → 精確定位 → Documents → Tracks"
             return
         }
 
@@ -120,6 +161,84 @@ final class LocationRecorder: ObservableObject {
         }
     }
 
+    /// After Shortcuts / process death: continue the open track file instead of starting a blank "second instance".
+    @discardableResult
+    private func resumeOpenFileIfPossible() -> Bool {
+        guard let tracksDirectory else { return false }
+
+        let defaults = UserDefaults.standard
+        if let savedName = defaults.string(forKey: PersistenceKey.activeFileName) {
+            let url = tracksDirectory.appendingPathComponent(savedName)
+            if FileManager.default.fileExists(atPath: url.path), loadFileForResume(url) {
+                return true
+            }
+        }
+
+        // Fallback: newest incomplete JSON in Tracks.
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: tracksDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return false }
+
+        let jsonFiles = files.filter { $0.pathExtension.lowercased() == "json" }
+        let sorted = jsonFiles.sorted { a, b in
+            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return da > db
+        }
+
+        for url in sorted {
+            if loadFileForResume(url) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func loadFileForResume(_ url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              let document = try? decoder.decode(TrackChunkFile.self, from: data)
+        else { return false }
+
+        // Full files are finished; don't append more to them.
+        guard document.points.count < Self.pointsPerFile else { return false }
+
+        currentFileURL = url
+        currentFileName = url.lastPathComponent
+        currentFileCreatedAt = document.createdAt
+        currentBatch = document.points
+        currentFilePointCount = document.points.count
+        recentPoints = Array(document.points.suffix(40))
+        UserDefaults.standard.set(currentFileName, forKey: PersistenceKey.activeFileName)
+        return true
+    }
+
+    private func recalculateTotalsFromDisk() {
+        guard let tracksDirectory,
+              let files = try? FileManager.default.contentsOfDirectory(
+                at: tracksDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+              )
+        else { return }
+
+        var total = 0
+        var completed = 0
+        for url in files where url.pathExtension.lowercased() == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  let document = try? decoder.decode(TrackChunkFile.self, from: data)
+            else { continue }
+            total += document.points.count
+            if url.lastPathComponent != currentFileName {
+                completed += 1
+            }
+        }
+        totalPointsRecorded = total
+        completedFileCount = completed
+        UserDefaults.standard.set(totalPointsRecorded, forKey: PersistenceKey.totalPoints)
+    }
+
     private func startNewFile() {
         guard let tracksDirectory else { return }
         let formatter = ISO8601DateFormatter()
@@ -129,8 +248,10 @@ final class LocationRecorder: ObservableObject {
         let url = tracksDirectory.appendingPathComponent(name)
         currentFileURL = url
         currentFileName = name
+        currentFileCreatedAt = Date()
         currentBatch = []
         currentFilePointCount = 0
+        UserDefaults.standard.set(name, forKey: PersistenceKey.activeFileName)
         persistCurrentFile()
     }
 
@@ -138,12 +259,12 @@ final class LocationRecorder: ObservableObject {
         persistCurrentFile()
         completedFileCount += 1
         startNewFile()
-        refreshCompletedFileCount()
+        recalculateTotalsFromDisk()
     }
 
     private func persistCurrentFile() {
         guard let currentFileURL else { return }
-        let document = TrackChunkFile(createdAt: Date(), points: currentBatch)
+        let document = TrackChunkFile(createdAt: currentFileCreatedAt, points: currentBatch)
         do {
             let data = try encoder.encode(document)
             try data.write(to: currentFileURL, options: [.atomic])
@@ -154,16 +275,5 @@ final class LocationRecorder: ObservableObject {
 
     private func ensureDirectory(_ url: URL) {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    }
-
-    private func refreshCompletedFileCount() {
-        guard let tracksDirectory,
-              let files = try? FileManager.default.contentsOfDirectory(
-                at: tracksDirectory,
-                includingPropertiesForKeys: nil
-              )
-        else { return }
-        let trackFiles = files.filter { $0.pathExtension.lowercased() == "json" }
-        completedFileCount = trackFiles.filter { $0.lastPathComponent != currentFileName }.count
     }
 }

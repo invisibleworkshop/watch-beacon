@@ -74,6 +74,8 @@ final class WatchSessionManager: NSObject, ObservableObject {
             let data = try JSONEncoder().encode(envelope)
             let payload: [String: Any] = [BridgeKeys.payload: data]
 
+            // Important: do NOT also updateApplicationContext with the same points payload.
+            // Phone receives both sendMessage and applicationContext → duplicate recordings.
             if preferRealtime, session.isReachable {
                 session.sendMessage(payload, replyHandler: { [weak self] _ in
                     Task { @MainActor in
@@ -86,13 +88,14 @@ final class WatchSessionManager: NSObject, ObservableObject {
                         self?.lastSentAt = Date()
                     }
                 })
-            } else {
+            } else if envelope.kind == .points {
                 session.transferUserInfo(payload)
                 lastSentAt = Date()
+            } else {
+                session.transferUserInfo(payload)
+                try? session.updateApplicationContext(payload)
+                lastSentAt = Date()
             }
-
-            // Keep a compact latest snapshot for when the phone becomes reachable.
-            try? session.updateApplicationContext(payload)
         } catch {
             lastError = error.localizedDescription
         }
@@ -105,6 +108,10 @@ final class WatchSessionManager: NSObject, ObservableObject {
               let command = envelope.command
         else { return }
 
+        if let seconds = envelope.recordIntervalSeconds {
+            locationManager?.setRecordIntervalSeconds(seconds)
+        }
+
         switch command {
         case .startTracking:
             locationManager?.startTracking()
@@ -112,6 +119,8 @@ final class WatchSessionManager: NSObject, ObservableObject {
         case .stopTracking:
             locationManager?.stopTracking()
             sendAck(command: .stopTracking)
+        case .updateSettings:
+            sendAck(command: .updateSettings)
         case .ping, .requestStatus:
             if let status = locationManager?.currentStatus() {
                 sendStatus(status)

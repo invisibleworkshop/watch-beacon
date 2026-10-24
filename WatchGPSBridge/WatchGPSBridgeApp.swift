@@ -1,43 +1,32 @@
 import SwiftUI
 
+/// Same pattern as 方圓記帳 (LedgerApp): SwiftUI `@main` + `WindowGroup`.
+/// Custom URL + UIKit SceneDelegate was causing Shortcuts to spawn a second window
+/// while Live Activity kept updating the first.
 @main
 struct WatchGPSBridgeApp: App {
-    @ObservedObject private var session = PhoneSessionManager.shared
-    @ObservedObject private var recorder = LocationRecorder.shared
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var monitor = StaleSignalMonitor()
-    @ObservedObject private var notifications = NotificationManager.shared
 
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environmentObject(session)
-                .environmentObject(recorder)
+                .environmentObject(PhoneSessionManager.shared)
+                .environmentObject(LocationRecorder.shared)
                 .environmentObject(monitor)
-                .environmentObject(notifications)
+                .environmentObject(NotificationManager.shared)
+                .environmentObject(AppSettings.shared)
                 .onOpenURL { url in
-                    handleIncomingURL(url)
+                    URLRouter.handle(url)
                 }
-                .task {
-                    // Cold-start from Shortcuts / URL should still attempt wake.
-                    if ProcessInfo.processInfo.arguments.contains("-startTracking") {
-                        await session.wakeWatchAndStartTracking()
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active else { return }
+                    Task {
+                        await PhoneSessionManager.shared.handleSceneBecameActive()
                     }
                 }
         }
-    }
-
-    private func handleIncomingURL(_ url: URL) {
-        guard url.scheme == BridgeKeys.urlScheme else { return }
-        let host = (url.host ?? url.path).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        switch host {
-        case "start", "open":
-            Task { await session.wakeWatchAndStartTracking() }
-        case "stop":
-            session.stopTrackingOnWatch()
-        case "status":
-            session.pingWatch()
-        default:
-            Task { await session.wakeWatchAndStartTracking() }
-        }
+        .handlesExternalEvents(matching: Set(["*"]))
     }
 }

@@ -446,8 +446,8 @@ def process_photos(
 def default_tracks_dir() -> Path:
     home = Path.home()
     candidates = [
-        home / "Library/Mobile Documents/iCloud~com~watchgpsbridge~app/Documents/Tracks",
-        home / "Library/Mobile Documents/iCloud.com.watchgpsbridge.app/Documents/Tracks",
+        home / "Library/Mobile Documents/iCloud~com~invisibleworkshop~watchgpsbridge/Documents/Tracks",
+        home / "Library/Mobile Documents/iCloud.com.invisibleworkshop.watchgpsbridge/Documents/Tracks",
     ]
     for path in candidates:
         if path.is_dir():

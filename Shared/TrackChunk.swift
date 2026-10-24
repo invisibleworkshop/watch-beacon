@@ -27,6 +27,6 @@ public struct TrackChunkFile: Codable, Sendable {
 
 public enum StorageKeys {
     /// Must match Xcode iCloud container id / entitlements.
-    public static let iCloudContainer = "iCloud.com.watchgpsbridge.app"
+    public static let iCloudContainer = "iCloud.com.invisibleworkshop.watchgpsbridge"
     public static let tracksFolderName = "Tracks"
 }

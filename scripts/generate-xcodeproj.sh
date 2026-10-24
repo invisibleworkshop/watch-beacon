@@ -9,4 +9,4 @@ if ! command -v xcodegen >/dev/null 2>&1; then
 fi
 
 xcodegen generate
-echo "已產生 WatchGPSBridge.xcodeproj，請用 Xcode 開啟並選擇你的 Team 簽章。"
+echo "已產生 WatchGPSBridge.xcodeproj（Team VHX5NF3JWK、Automatic signing）。"

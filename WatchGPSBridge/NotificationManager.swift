@@ -18,13 +18,26 @@ final class NotificationManager: ObservableObject {
         }
     }
 
-    func notifyStaleSignal(secondsWithoutData: TimeInterval) {
+    func notifyStaleSignal(
+        secondsWithoutData: TimeInterval,
+        autoRewaking: Bool = false,
+        detail: String? = nil
+    ) {
         let content = UNMutableNotificationContent()
-        content.title = "Apple Watch GPS 中斷"
-        content.body = String(
-            format: "已超過 %.0f 秒未收到 Watch 精確定位。請檢查 Watch 是否佩戴、電量、定位權限，以及「腕上定位」App 是否仍在定位中。",
-            secondsWithoutData
-        )
+        content.title = "手錶 GPS 中斷"
+        if let detail {
+            content.body = detail
+        } else if autoRewaking {
+            content.body = String(
+                format: "已超過 %.0f 秒未收到定位，正在嘗試重新喚醒手錶上的「精確定位」。",
+                secondsWithoutData
+            )
+        } else {
+            content.body = String(
+                format: "已超過 %.0f 秒未收到手錶精確定位。請檢查手錶是否佩戴、電量、定位權限，以及 App 是否仍在定位中。",
+                secondsWithoutData
+            )
+        }
         content.sound = .default
 
         let request = UNNotificationRequest(
@@ -37,7 +50,7 @@ final class NotificationManager: ObservableObject {
 
     func notifyWatchWakeFailed(message: String) {
         let content = UNMutableNotificationContent()
-        content.title = "無法喚醒 Apple Watch"
+        content.title = "無法喚醒手錶"
         content.body = message
         content.sound = .default
         let request = UNNotificationRequest(

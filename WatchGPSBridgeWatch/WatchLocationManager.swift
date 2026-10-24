@@ -17,6 +17,9 @@ final class WatchLocationManager: NSObject, ObservableObject {
     private var workoutBuilder: HKLiveWorkoutBuilder?
     private var pendingPoints: [GPSPoint] = []
     private var flushTask: Task<Void, Never>?
+    /// Keep at most one sample per this many seconds (from phone settings).
+    private(set) var recordIntervalSeconds: TimeInterval = 1
+    private var lastAcceptedAt: Date?
 
     var onPointsBatch: (([GPSPoint]) -> Void)?
     var onStatusChange: ((WatchStatus) -> Void)?
@@ -29,6 +32,16 @@ final class WatchLocationManager: NSObject, ObservableObject {
         locationManager.activityType = .fitness
         locationManager.allowsBackgroundLocationUpdates = true
         authorizationStatus = locationManager.authorizationStatus
+        let raw = UserDefaults.standard.integer(forKey: "watchgpsbridge.recordIntervalSeconds")
+        if let interval = GPSRecordInterval(rawValue: raw) {
+            recordIntervalSeconds = TimeInterval(interval.rawValue)
+        }
+    }
+
+    func setRecordIntervalSeconds(_ seconds: Int) {
+        let clamped = GPSRecordInterval(rawValue: seconds)?.rawValue ?? 1
+        recordIntervalSeconds = TimeInterval(clamped)
+        UserDefaults.standard.set(clamped, forKey: "watchgpsbridge.recordIntervalSeconds")
     }
 
     func requestAuthorization() {
@@ -100,9 +113,10 @@ final class WatchLocationManager: NSObject, ObservableObject {
         flushTask?.cancel()
         flushTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let nanos = UInt64(max(1, self?.recordIntervalSeconds ?? 1) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanos)
                 await MainActor.run {
-                    self?.flushPending(force: false)
+                    self?.flushPending(force: true)
                 }
             }
         }
@@ -110,7 +124,7 @@ final class WatchLocationManager: NSObject, ObservableObject {
 
     private func flushPending(force: Bool) {
         guard !pendingPoints.isEmpty else { return }
-        guard force || pendingPoints.count >= 3 else { return }
+        guard force || pendingPoints.count >= 1 else { return }
         let batch = pendingPoints
         pendingPoints.removeAll(keepingCapacity: true)
         onPointsBatch?(batch)
@@ -172,9 +186,15 @@ extension WatchLocationManager: CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
+            var didAccept = false
             for location in locations {
                 // Skip clearly invalid / coarse cellular-only fixes when possible.
                 guard location.horizontalAccuracy >= 0 else { continue }
+
+                if let lastAcceptedAt,
+                   location.timestamp.timeIntervalSince(lastAcceptedAt) < recordIntervalSeconds {
+                    continue
+                }
 
                 let point = GPSPoint(
                     latitude: location.coordinate.latitude,
@@ -187,15 +207,29 @@ extension WatchLocationManager: CLLocationManagerDelegate {
                     timestamp: location.timestamp
                 )
                 lastPoint = point
+                lastAcceptedAt = location.timestamp
                 pendingPoints.append(point)
+                didAccept = true
             }
-            flushPending(force: false)
+            // Successful fixes mean prior "location unknown" noise is stale.
+            if didAccept {
+                lastError = nil
+                flushPending(force: true)
+            }
             publishStatus()
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         Task { @MainActor in
+            // kCLErrorDomain 0 = locationUnknown: GPS still acquiring; not a real failure.
+            // Common outdoors while first fix comes in — points may already be flowing to iPhone.
+            if let clError = error as? CLError, clError.code == .locationUnknown {
+                if lastPoint == nil, lastError == nil {
+                    lastError = "正在取得 GPS…"
+                }
+                return
+            }
             lastError = error.localizedDescription
             publishStatus()
         }

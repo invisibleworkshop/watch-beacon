@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject private var recorder: LocationRecorder
     @EnvironmentObject private var monitor: StaleSignalMonitor
     @EnvironmentObject private var notifications: NotificationManager
+    @EnvironmentObject private var settings: AppSettings
 
     var body: some View {
         NavigationStack {
@@ -12,6 +13,8 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     hero
                     statusSection
+                    .id(session.uiEpoch) // force redraw when WC/points update (Shortcuts window was freezing)
+                    settingsSection
                     controls
                     recentPoints
                     shortcutsHint
@@ -19,9 +22,10 @@ struct ContentView: View {
                 .padding(20)
             }
             .background(PageBackground())
-            .navigationTitle("腕上定位")
+            .navigationTitle("精確定位")
             .task {
                 await notifications.requestAuthorization()
+                _ = await session.prepareForWatchConnectivity()
                 monitor.start(session: session)
             }
         }
@@ -29,10 +33,10 @@ struct ContentView: View {
 
     private var hero: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("腕上定位")
+            Text("精確定位")
                 .font(.system(size: 40, weight: .bold, design: .serif))
                 .foregroundStyle(Color("BrandInk"))
-            Text("由 Apple Watch 送出精確 GPS，iPhone 負責記錄與斷線提醒。捷徑只需打開本 App。")
+            Text("由手錶送出精確 GPS，手機負責記錄與靈動島狀態；約 1 分鐘沒訊號會喚醒手錶，連續約 5 分鐘仍無訊息才通知。")
                 .font(.system(.body, design: .rounded))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -41,15 +45,44 @@ struct ContentView: View {
         .padding(.top, 8)
     }
 
+    private var settingsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("設定")
+                .font(.headline)
+            Text("GPS 記錄間隔")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Picker("GPS 記錄間隔", selection: $settings.recordInterval) {
+                ForEach(AppSettings.allowedIntervals) { interval in
+                    Text(interval.label).tag(interval)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("手錶依此間隔保留點位並傳回手機。變更後會同步到手錶。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if monitor.isStale {
+                statusRow(
+                    title: "喚醒嘗試",
+                    value: "\(monitor.rewakeAttemptsInCurrentGap) / 5",
+                    ok: monitor.rewakeAttemptsInCurrentGap < 5
+                )
+            }
+        }
+    }
+
     private var statusSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("連線狀態")
                 .font(.headline)
 
+            progressLine
+
             statusRow(
-                title: "Watch App",
-                value: session.isWatchAppInstalled ? "已安裝" : "未安裝",
-                ok: session.isWatchAppInstalled
+                title: "手錶 Companion",
+                value: watchCompanionLabel,
+                ok: session.hasWatchCompanion || session.isReachable
             )
             statusRow(
                 title: "即時可達",
@@ -68,9 +101,13 @@ struct ContentView: View {
             )
 
             if monitor.isStale {
-                Text("訊號逾時：請檢查 Apple Watch 佩戴、電量與定位權限。")
-                    .font(.subheadline)
-                    .foregroundStyle(Color("AlertClay"))
+                Text(
+                    monitor.isAttemptingRewake
+                        ? "訊號逾時，正在喚醒手錶（每分鐘一次）…"
+                        : "訊號逾時：每分鐘自動喚醒；連續 5 次仍無訊息才通知。"
+                )
+                .font(.subheadline)
+                .foregroundStyle(Color("AlertClay"))
             }
 
             if let error = session.lastError {
@@ -124,6 +161,45 @@ struct ContentView: View {
         .padding(.top, 8)
     }
 
+    private var progressLine: some View {
+        HStack(alignment: .top, spacing: 8) {
+            if session.progress.isBusy {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: progressSymbol)
+                    .foregroundStyle(progressColor)
+            }
+            Text(session.progress.line)
+                .font(.subheadline)
+                .foregroundStyle(progressColor)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(progressColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var progressSymbol: String {
+        switch session.progress {
+        case .idle: return "pause.circle"
+        case .receiving: return "antenna.radiowaves.left.and.right"
+        case .failed: return "exclamationmark.triangle.fill"
+        default: return "ellipsis.circle"
+        }
+    }
+
+    private var progressColor: Color {
+        switch session.progress {
+        case .failed: return Color("AlertClay")
+        case .receiving: return Color("BrandInk")
+        case .idle: return .secondary
+        default: return Color("BrandInk")
+        }
+    }
+
     private var lastSignalLabel: String {
         if let date = session.lastReceivedAt {
             let formatter = RelativeDateTimeFormatter()
@@ -132,6 +208,20 @@ struct ContentView: View {
             return formatter.localizedString(for: date, relativeTo: Date())
         }
         return "尚未收到"
+    }
+
+    private var watchCompanionLabel: String {
+        if session.isReachable || session.hasWatchCompanion {
+            return "已安裝／可通訊"
+        }
+        if !session.isWatchPaired {
+            return "未配對手錶"
+        }
+        if session.isWatchAppInstalled {
+            return "已安裝"
+        }
+        // System flag is often wrong on TestFlight; don't scare if Watch itself says connected.
+        return "系統回報未安裝（若手錶顯示已連線可忽略）"
     }
 
     private func statusRow(title: String, value: String, ok: Bool) -> some View {
@@ -151,7 +241,7 @@ struct ContentView: View {
             Button {
                 Task { await session.wakeWatchAndStartTracking() }
             } label: {
-                Text("喚醒 Watch 並開始記錄")
+                Text("開始手機記錄（喚醒手錶）")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(PrimaryButtonStyle())
@@ -163,7 +253,7 @@ struct ContentView: View {
                 .buttonStyle(SecondaryButtonStyle())
 
                 Button("重新查詢") {
-                    session.pingWatch()
+                    Task { await session.pingWatch() }
                 }
                 .buttonStyle(SecondaryButtonStyle())
             }
@@ -208,10 +298,13 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("捷徑設定")
                 .font(.headline)
-            Text("在「捷徑」建立自動化：於指定時間「打開 App → 腕上定位」，或執行 App Intent「開始 Watch GPS 記錄」。本 App 會嘗試喚醒 Watch Companion。")
+            Text("記錄以手機為準。定時維持請用「打開 App → 精確定位」（與方圓記帳相同），不要用「打開 URL」——自訂 URL 在本 App（有靈動島）容易開出第二個視窗。每次打開若正在記錄會自動檢查／重喚醒手錶。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            Text("URL Scheme：watchgpsbridge://start")
+            Text("可選 URL（容易開雙窗，不建議給自動化）：")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("watchgpsbridge://start  /  ensure  /  stop")
                 .font(.system(.caption, design: .monospaced))
             Text("Mac 處理")
                 .font(.headline)

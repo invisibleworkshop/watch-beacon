@@ -45,6 +45,21 @@ public enum BridgeCommand: String, Codable, Sendable {
     case stopTracking
     case ping
     case requestStatus
+    case updateSettings
+}
+
+/// How often the Watch should keep / send a GPS sample (seconds).
+public enum GPSRecordInterval: Int, CaseIterable, Codable, Sendable, Identifiable {
+    case one = 1
+    case three = 3
+    case five = 5
+    case ten = 10
+
+    public var id: Int { rawValue }
+
+    public var label: String {
+        "每 \(rawValue) 秒"
+    }
 }
 
 public struct BridgeEnvelope: Codable, Sendable {
@@ -59,6 +74,7 @@ public struct BridgeEnvelope: Codable, Sendable {
     public let command: BridgeCommand?
     public let points: [GPSPoint]?
     public let status: WatchStatus?
+    public let recordIntervalSeconds: Int?
     public let sentAt: Date
 
     public init(
@@ -66,12 +82,14 @@ public struct BridgeEnvelope: Codable, Sendable {
         command: BridgeCommand? = nil,
         points: [GPSPoint]? = nil,
         status: WatchStatus? = nil,
+        recordIntervalSeconds: Int? = nil,
         sentAt: Date = Date()
     ) {
         self.kind = kind
         self.command = command
         self.points = points
         self.status = status
+        self.recordIntervalSeconds = recordIntervalSeconds
         self.sentAt = sentAt
     }
 }
@@ -104,5 +122,5 @@ public struct WatchStatus: Codable, Sendable, Equatable {
 public enum BridgeKeys {
     public static let payload = "payload"
     public static let urlScheme = "watchgpsbridge"
-    public static let appGroupSuite = "group.com.watchgpsbridge.app"
+    public static let appGroupSuite = "group.com.invisibleworkshop.watchgpsbridge"
 }

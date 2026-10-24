@@ -8,7 +8,7 @@ Prefer the GUI on Mac:
 CLI example:
 
   python tools/geotag_photos.py \\
-    --tracks ~/Library/Mobile\\ Documents/iCloud~com~watchgpsbridge~app/Documents/Tracks \\
+    --tracks ~/Library/Mobile\\ Documents/iCloud~com~invisibleworkshop~watchgpsbridge/Documents/Tracks \\
     --photos ~/Pictures/Trip \\
     --source-tz GMT+8 \\
     --target-tz GMT+9 \\
@@ -36,7 +36,7 @@ from geotag_lib import (  # noqa: E402
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="修正照片時區並寫入 EXIF GPS（腕上定位軌跡）"
+        description="修正照片時區並寫入 EXIF GPS（精確定位軌跡）"
     )
     parser.add_argument("--tracks", type=Path, default=default_tracks_dir())
     parser.add_argument("--photos", type=Path, required=True)

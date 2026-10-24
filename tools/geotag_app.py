@@ -33,7 +33,7 @@ from geotag_lib import (  # noqa: E402
 class GeotagApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("腕上定位 · 照片 Geotag")
+        self.title("精確定位 · 照片 Geotag")
         self.geometry("780x640")
         self.minsize(700, 560)
 
@@ -56,7 +56,7 @@ class GeotagApp(tk.Tk):
         root = ttk.Frame(self)
         root.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(root, text="腕上定位 Geotag", font=("Helvetica", 18, "bold")).pack(
+        ttk.Label(root, text="精確定位 Geotag", font=("Helvetica", 18, "bold")).pack(
             anchor="w", **pad
         )
         ttk.Label(
