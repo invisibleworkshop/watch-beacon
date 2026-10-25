@@ -1,6 +1,6 @@
 # 精確定位（WatchGPSBridge）
 
-用 **Apple Watch Companion App** 取得精確 GPS，即時傳到 **iPhone**，並以 **每 1 萬點一個 JSON** 持續寫入 **iCloud Drive**；逾時未收到訊號會通知。捷徑只需定時打開 **iPhone App**。Mac 上用附贈的 **Python 腳本** 依照片拍攝時間寫入 EXIF GPS。
+用 **Apple Watch Companion App** 取得精確 GPS，即時傳到 **iPhone**，並以 **每 1 萬點一個 GPX** 持續寫入 **iCloud Drive**；逾時未收到訊號會通知。捷徑只需定時打開 **iPhone App**。Mac 上用可上架的 **精確定位 Geotag** App 依照片拍攝時間寫入 EXIF GPS，並支援 GPX ⇄ 舊 geotag JSON 互轉。
 
 ## 為什麼一定要 Watch App？
 
@@ -12,17 +12,16 @@ Apple 不提供「內建 GPS 廣播給第三方 iPhone App」的 API。要穩定
 2. iPhone 用 HealthKit `startWatchApp` **喚醒 Watch Companion**
 3. Watch 以最高導航精度定位，並用運動工作階段維持背景 GPS
 4. 點位經 WatchConnectivity 傳到 iPhone
-5. iPhone **連續寫入** iCloud：`Documents/Tracks/track-….json`，每滿 **10,000** 點開新檔；記錄中會以 **Live Activity** 顯示在靈動島／鎖定畫面
+5. iPhone **連續寫入** iCloud：`Documents/Tracks/track-….gpx`，每滿 **10,000** 點開新檔；記錄中會以 **Live Activity** 顯示在靈動島／鎖定畫面
 6. 超過約 60 秒沒收到點位 → 每分鐘自動喚醒手錶；連續約 5 分鐘仍無訊息才本地通知
-7. Mac 同步 iCloud 後，執行 `tools/geotag_photos.py` 幫照片標 GPS
+7. Mac 同步 iCloud 後，用 **精確定位 Geotag** 幫照片標 GPS
 
 ## 環境需求
 
-- macOS + Xcode 15+（建 iOS／watchOS App）
+- macOS + Xcode 15+（建 iOS／watchOS／macOS App）
 - iPhone（iOS 17+）與支援 GPS 的 Apple Watch（watchOS 10+）
-- Apple Developer 帳號（HealthKit + **iCloud Documents**）
+- Apple Developer 帳號（HealthKit + **iCloud Documents**；Mac App 用 sandbox）
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen)
-- Mac 處理照片：Python 3.10+
 
 ## 建置步驟（iPhone / Watch）
 
@@ -32,7 +31,7 @@ brew install xcodegen
 open WatchGPSBridge.xcodeproj
 ```
 
-版本：**1.0.0**（build **5**），見 `project.yml` 的 `MARKETING_VERSION`／`CURRENT_PROJECT_VERSION`。
+版本：**1.0.0**（build 見 `project.yml` 的 `CURRENT_PROJECT_VERSION`）。
 
 在 Xcode：
 
@@ -59,55 +58,29 @@ Finder 路徑大致為：
 
 ```text
 iCloud Drive / 精確定位 / Documents / Tracks /
-  track-2026-10-23T04-00-00Z-part0001.json
-  track-2026-10-23T05-12-11Z-part0002.json
+  track-2026-10-23T04-00-00Z-part0001.gpx
+  track-2026-10-23T05-12-11Z-part0002.gpx
   ...
 ```
 
-每個檔案約 1 萬點（pretty JSON 約 **2.5–3 MB**）。目前開啟中的檔會持續覆寫進度；滿 1 萬點後封存並開新檔。可連續記錄，不設總上限。
+每個檔案約 1 萬點（GPX 1.1）。目前開啟中的檔會持續覆寫進度；滿 1 萬點後封存並開新檔。可連續記錄，不設總上限。
 
-JSON 結構：
+舊版曾使用 geotag JSON（`TrackChunkFile`）；iPhone 開啟舊檔會讀取後改寫為 GPX。Mac App「格式互轉」可 GPX ⇄ JSON 雙向轉換。
 
-```json
-{
-  "schemaVersion": 1,
-  "pointsPerFile": 10000,
-  "createdAt": "...",
-  "pointCount": 123,
-  "points": [
-    {
-      "id": "...",
-      "latitude": 25.03,
-      "longitude": 121.56,
-      "altitude": 12.5,
-      "horizontalAccuracy": 4.0,
-      "verticalAccuracy": 3.0,
-      "speed": 1.2,
-      "course": 90.0,
-      "timestamp": "2026-10-23T04:10:00Z"
-    }
-  ]
-}
-```
+## Mac App：精確定位 Geotag（可上架 Mac App Store）
 
-## Mac App：修正時區 + 對應 GPS
-
-照片 EXIF 時區常是錯的（例如人在 GMT+9，相機仍標 GMT+8）。用 App 指定：
-
-1. **軌跡目錄**（iCloud `Tracks`）
-2. **照片目錄**
-3. **原時區 / 目標時區**（例 GMT+8 → GMT+9）
-4. 寫回 EXIF：**DateTime / DateTimeOriginal / DateTimeDigitized**、**OffsetTime\***，以及對到的 **GPS**
+原生 SwiftUI macOS App（App Sandbox），Bundle ID：`com.invisibleworkshop.watchgpsbridge.geotag`。
 
 ```bash
-cd /path/to/this/repo
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r tools/requirements.txt
-
-# 圖形介面（建議）
-python tools/geotag_app.py
+./scripts/generate-xcodeproj.sh
+open WatchGPSBridge.xcodeproj
+# scheme：PreciseGeotagMac → Archive → Distribute → Mac App Store
 ```
+
+功能：
+
+1. **照片 Geotag**：選軌跡目錄（GPX／舊 JSON）與照片目錄，修正 EXIF 時區並寫入 GPS  
+2. **格式互轉**：GPX ⇄ geotag JSON（單檔或整個資料夾）
 
 時區模式：
 
@@ -118,9 +91,14 @@ python tools/geotag_app.py
 
 先不要勾「實際寫入」可預覽；確認後再寫入（會改原檔，請先備份）。
 
-CLI 同等功能：
+### 可選：Python CLI（開發／批次）
+
+仍保留 `tools/geotag_photos.py`（支援 `.gpx` 與舊 `.json`）。日常請用 Mac App。
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r tools/requirements.txt
 python tools/geotag_photos.py \
   --tracks "$HOME/Library/Mobile Documents/iCloud~com~invisibleworkshop~watchgpsbridge/Documents/Tracks" \
   --photos ~/Pictures/MyTrip \
@@ -137,7 +115,7 @@ python tools/geotag_photos.py \
 
 **記錄以手機為準**：必須啟動「精確定位」才會監視手錶並寫入 iCloud；只對手錶開 GPS、手機沒在記錄 → **不會存檔**。
 
-iOS **不提供**「判斷 App 是否還在背景」，時間自動化也**沒有「每小時」**（只有每天／週／月／年）。捷徑介面通常也**沒有名為「執行 App Intent」的動作**——請改用 **「打開 URL」**。
+iOS **不提供**「判斷 App 是否還在背景」，時間自動化也**沒有「每小時」**（只有每天／週／月／年）。
 
 ### 建議設定（與方圓記帳相同：打開 App）
 
@@ -164,13 +142,12 @@ iOS **不提供**「判斷 App 是否還在背景」，時間自動化也**沒�
 ## 專案結構
 
 ```text
-Shared/                 共用模型
-WatchGPSBridge/         iPhone（接收、iCloud 輪轉存檔、通知、Intent）
+Shared/                 共用模型、GPXCodec
+WatchGPSBridge/         iPhone（接收、iCloud 輪轉 GPX、通知、Intent）
 WatchGPSBridgeWatch/    Watch Companion
-tools/geotag_app.py      Mac 圖形 App（目錄 + 時區 + 寫入 EXIF）
-tools/geotag_photos.py  同等 CLI
-tools/geotag_lib.py     核心邏輯
-tools/requirements.txt
+PreciseGeotagMac/       macOS Geotag App（可上架）
+tools/geotag_photos.py  可選 CLI
+tools/geotag_lib.py     CLI 核心（含 GPX）
 project.yml
 ```
 
@@ -181,12 +158,12 @@ project.yml
 - 斷線門檻：`StaleSignalMonitor.staleThreshold`（預設 60 秒）
 - 自動重喚醒間隔：`StaleSignalMonitor.rewakeCooldown`（預設 60 秒）
 - 通知：連續 `notifyAfterRewakeAttempts` 次（預設 5，約 5 分鐘）仍無訊號才通知
-- 照片匹配容許差：App／`--max-delta-seconds`（預設 300）
+- 照片匹配容許差：Mac App／`--max-delta-seconds`（預設 300）
 
 ## 限制
 
 - 需 GPS 機型 Apple Watch  
-- iCloud 需同一 Apple ID，並等到 Mac 同步完成再跑腳本  
+- iCloud 需同一 Apple ID，並等到 Mac 同步完成再 geotag  
 - 寫入 EXIF 會改原檔，請先備份  
 - 本環境無法編譯 iOS；請在 Mac + 實機驗證  
 

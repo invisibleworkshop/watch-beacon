@@ -12,8 +12,11 @@ final class PhoneSessionManager: ObservableObject {
     @Published private(set) var isWatchPaired = false
     @Published private(set) var isWatchAppInstalled = false
     @Published private(set) var isReachable = false
-    /// True once we have proof the companion exists (system flag, reachability, or any WC payload).
+    /// Live proof only: system reports installed **or** Watch is reachable right now.
+    /// Never latched from stale WC applicationContext (that survives uninstall/reinstall).
     @Published private(set) var hasWatchCompanion = false
+    /// Last time we got a WC payload while reachable (or a fresh status reply).
+    @Published private(set) var lastCompanionContactAt: Date?
     @Published private(set) var watchStatus = WatchStatus()
     @Published private(set) var lastReceivedAt: Date?
     @Published private(set) var isExpectingTracking = false
@@ -24,6 +27,9 @@ final class PhoneSessionManager: ObservableObject {
     @Published private(set) var progress: ConnectionProgress = .idle
     /// Bumped on each connectivity / points refresh so SwiftUI windows always redraw.
     @Published private(set) var uiEpoch: UInt64 = 0
+
+    /// Points older than this no longer count as “記錄中，持續接收”.
+    static let freshPointThreshold: TimeInterval = 60
 
     fileprivate let session: WCSession?
     private let healthStore = HKHealthStore()
@@ -55,8 +61,9 @@ final class PhoneSessionManager: ObservableObject {
     private func reconcileAfterLaunch() {
         recorder.prepareStorage()
         if isExpectingTracking {
-            refreshLiveActivity(isStale: false)
-            progress = lastReceivedAt == nil ? .waitingForFirstFix : .receiving
+            let stale = !hasFreshPoints
+            refreshLiveActivity(isStale: stale)
+            reconcileProgressWithReality(allowBusyOverride: true)
         } else if TrackingLiveActivityController.shared.orphanSnapshot != nil {
             TrackingLiveActivityController.shared.end()
             progress = .idle
@@ -72,6 +79,8 @@ final class PhoneSessionManager: ObservableObject {
         case startingWatchTracking
         case waitingForFirstFix
         case receiving
+        /// Phone still wants points, but none recently (watch dead / reinstall / not reachable).
+        case expectingNoSignal
         case staleRewaking
         case failed(String)
 
@@ -91,6 +100,8 @@ final class PhoneSessionManager: ObservableObject {
                 return "等待手錶第一筆 GPS（戶外通常數秒～十幾秒）…"
             case .receiving:
                 return "記錄中，持續接收手錶點位"
+            case .expectingNoSignal:
+                return "手機仍在記錄，但已久未收到手錶點位（手錶可能未開或需重裝 Companion）"
             case .staleRewaking:
                 return "訊號中斷，正在重新喚醒手錶…"
             case .failed(let message):
@@ -100,12 +111,53 @@ final class PhoneSessionManager: ObservableObject {
 
         var isBusy: Bool {
             switch self {
-            case .idle, .receiving, .failed:
+            case .idle, .receiving, .expectingNoSignal, .failed:
                 return false
             default:
                 return true
             }
         }
+    }
+
+    var hasFreshPoints: Bool {
+        guard let lastReceivedAt else { return false }
+        return Date().timeIntervalSince(lastReceivedAt) < Self.freshPointThreshold
+    }
+
+    /// Align progress / Watch-tracking UI with live WC + recent points (not persisted history alone).
+    func reconcileProgressWithReality(allowBusyOverride: Bool = false) {
+        guard isExpectingTracking else {
+            if case .failed = progress { return }
+            if progress != .idle { setProgress(.idle) }
+            return
+        }
+
+        if !allowBusyOverride {
+            switch progress {
+            case .activatingConnectivity, .requestingHealthPermission, .wakingWatch,
+                 .startingWatchTracking, .staleRewaking:
+                return
+            default:
+                break
+            }
+        }
+
+        if hasFreshPoints {
+            setProgress(.receiving)
+        } else if lastReceivedAt == nil {
+            setProgress(.waitingForFirstFix)
+        } else {
+            setProgress(.expectingNoSignal)
+            // Don't clear watchStatus.isTracking here — a live status reply may still say tracking.
+            // Clearing happens when companion is gone (see refreshWatchConnectivityState).
+        }
+    }
+
+    private func clearOptimisticWatchTracking() {
+        guard watchStatus.isTracking else { return }
+        var status = watchStatus
+        status.isTracking = false
+        watchStatus = status
     }
 
     enum EnsureTrackingResult {
@@ -127,7 +179,7 @@ final class PhoneSessionManager: ObservableObject {
         let elapsed = Date().timeIntervalSince(reference)
         if elapsed < staleThreshold {
             await pingWatch()
-            setProgress(lastReceivedAt == nil ? .waitingForFirstFix : .receiving)
+            reconcileProgressWithReality(allowBusyOverride: true)
             return .healthy
         }
 
@@ -171,9 +223,10 @@ final class PhoneSessionManager: ObservableObject {
         }
         sendCommand(.startTracking)
         sendCommand(.requestStatus)
-        refreshLiveActivity(isStale: false)
+        refreshLiveActivity(isStale: !hasFreshPoints)
         if wakeSucceeded {
-            setProgress(lastReceivedAt == nil ? .waitingForFirstFix : .receiving)
+            // Only "receiving" if points are actually fresh — not leftover lastReceivedAt from yesterday.
+            reconcileProgressWithReality(allowBusyOverride: true)
         }
         bumpUI()
         return wakeSucceeded
@@ -232,7 +285,8 @@ final class PhoneSessionManager: ObservableObject {
         guard let session, session.activationState == .activated else { return }
         let context = session.receivedApplicationContext
         guard !context.isEmpty else { return }
-        handleIncoming(context)
+        // Stale applicationContext survives watch uninstall/reinstall — never treat it as live proof.
+        handleIncoming(context, source: .staleApplicationContext)
     }
 
     func stopTrackingOnWatch() {
@@ -240,6 +294,7 @@ final class PhoneSessionManager: ObservableObject {
         expectingSince = nil
         persistExpectation()
         sendCommand(.stopTracking)
+        clearOptimisticWatchTracking()
         TrackingLiveActivityController.shared.end()
         setProgress(.idle)
     }
@@ -269,6 +324,9 @@ final class PhoneSessionManager: ObservableObject {
             isWatchPaired = false
             isWatchAppInstalled = false
             isReachable = false
+            hasWatchCompanion = false
+            clearOptimisticWatchTracking()
+            reconcileProgressWithReality()
             bumpUI()
             return
         }
@@ -276,18 +334,31 @@ final class PhoneSessionManager: ObservableObject {
 
         isWatchPaired = session.isPaired
         isReachable = session.isReachable
-        let reportedInstalled = session.isPaired && session.isWatchAppInstalled
-        isWatchAppInstalled = reportedInstalled
-        if reportedInstalled || session.isReachable {
-            hasWatchCompanion = true
+        // Trust WCSession only — do not latch from old payloads.
+        isWatchAppInstalled = session.isPaired && session.isWatchAppInstalled
+        hasWatchCompanion = isWatchAppInstalled || isReachable
+
+        if !hasWatchCompanion {
+            clearOptimisticWatchTracking()
         }
+        reconcileProgressWithReality()
         bumpUI()
     }
 
-    private func noteWatchCommunication() {
-        hasWatchCompanion = true
-        isWatchAppInstalled = true
+    fileprivate enum IncomingSource {
+        case liveMessage
+        case staleApplicationContext
+    }
+
+    private func noteWatchCommunication(source: IncomingSource) {
+        guard source == .liveMessage else { return }
+        // Only count as live contact when the watch is actually reachable, or system says installed.
         refreshWatchConnectivityState()
+        if isReachable || isWatchAppInstalled {
+            lastCompanionContactAt = Date()
+            hasWatchCompanion = true
+        }
+        bumpUI()
     }
 
     private func bumpUI() {
@@ -328,10 +399,12 @@ final class PhoneSessionManager: ObservableObject {
             return
         }
 
+        let settings = AppSettings.shared
         let envelope = BridgeEnvelope(
             kind: .command,
             command: command,
-            recordIntervalSeconds: AppSettings.shared.recordInterval.rawValue
+            recordIntervalSeconds: settings.recordInterval.rawValue,
+            quietHours: settings.quietHours
         )
         do {
             let data = try JSONEncoder().encode(envelope)
@@ -355,19 +428,22 @@ final class PhoneSessionManager: ObservableObject {
         }
     }
 
-    fileprivate func handleIncoming(_ payload: [String: Any]) {
+    fileprivate func handleIncoming(_ payload: [String: Any], source: IncomingSource = .liveMessage) {
         guard let data = payload[BridgeKeys.payload] as? Data,
               let envelope = try? JSONDecoder().decode(BridgeEnvelope.self, from: data)
         else { return }
 
-        noteWatchCommunication()
+        noteWatchCommunication(source: source)
 
         switch envelope.kind {
         case .points:
+            // Points in leftover applicationContext must not fake a live recording session.
+            guard source == .liveMessage else { return }
             guard isExpectingTracking else { return }
             guard let points = envelope.points, !points.isEmpty else { return }
 
             lastReceivedAt = Date()
+            lastCompanionContactAt = Date()
             persistExpectation()
             recorder.append(points)
             onPointsReceived?(points)
@@ -381,10 +457,15 @@ final class PhoneSessionManager: ObservableObject {
             refreshLiveActivity(isStale: false)
             setProgress(.receiving)
         case .status:
+            guard source == .liveMessage else { return }
             if let status = envelope.status {
                 watchStatus = status
+                if isReachable || isWatchAppInstalled {
+                    lastCompanionContactAt = Date()
+                }
                 bumpUI()
             }
+            reconcileProgressWithReality()
         case .ack, .command:
             break
         }
@@ -452,7 +533,10 @@ private final class PhoneWCSessionBridge: NSObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         Task { @MainActor in
-            owner?.handleIncoming(applicationContext)
+            // Context persists across uninstall; only trust it when the watch is reachable now.
+            let source: PhoneSessionManager.IncomingSource =
+                session.isReachable ? .liveMessage : .staleApplicationContext
+            owner?.handleIncoming(applicationContext, source: source)
         }
     }
 }

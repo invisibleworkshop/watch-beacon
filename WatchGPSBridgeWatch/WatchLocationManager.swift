@@ -17,12 +17,20 @@ final class WatchLocationManager: NSObject, ObservableObject {
     private var workoutBuilder: HKLiveWorkoutBuilder?
     private var pendingPoints: [GPSPoint] = []
     private var flushTask: Task<Void, Never>?
-    /// Keep at most one sample per this many seconds (from phone settings).
-    private(set) var recordIntervalSeconds: TimeInterval = 1
+    /// Active-hours interval from phone settings (before quiet-hours override).
+    private(set) var baseRecordIntervalSeconds: TimeInterval = 1
+    private(set) var quietHours: QuietHoursSchedule = .default
     private var lastAcceptedAt: Date?
 
     var onPointsBatch: (([GPSPoint]) -> Void)?
     var onStatusChange: ((WatchStatus) -> Void)?
+
+    /// Interval currently in effect (quiet hours may coarsen this).
+    var effectiveRecordIntervalSeconds: TimeInterval {
+        TimeInterval(
+            quietHours.effectiveIntervalSeconds(base: Int(baseRecordIntervalSeconds))
+        )
+    }
 
     override init() {
         super.init()
@@ -34,14 +42,25 @@ final class WatchLocationManager: NSObject, ObservableObject {
         authorizationStatus = locationManager.authorizationStatus
         let raw = UserDefaults.standard.integer(forKey: "watchgpsbridge.recordIntervalSeconds")
         if let interval = GPSRecordInterval(rawValue: raw) {
-            recordIntervalSeconds = TimeInterval(interval.rawValue)
+            baseRecordIntervalSeconds = TimeInterval(interval.rawValue)
+        }
+        if let data = UserDefaults.standard.data(forKey: "watchgpsbridge.quietHours"),
+           let decoded = try? JSONDecoder().decode(QuietHoursSchedule.self, from: data) {
+            quietHours = decoded
         }
     }
 
     func setRecordIntervalSeconds(_ seconds: Int) {
         let clamped = GPSRecordInterval(rawValue: seconds)?.rawValue ?? 1
-        recordIntervalSeconds = TimeInterval(clamped)
+        baseRecordIntervalSeconds = TimeInterval(clamped)
         UserDefaults.standard.set(clamped, forKey: "watchgpsbridge.recordIntervalSeconds")
+    }
+
+    func setQuietHours(_ schedule: QuietHoursSchedule) {
+        quietHours = schedule
+        if let data = try? JSONEncoder().encode(schedule) {
+            UserDefaults.standard.set(data, forKey: "watchgpsbridge.quietHours")
+        }
     }
 
     func requestAuthorization() {
@@ -113,7 +132,9 @@ final class WatchLocationManager: NSObject, ObservableObject {
         flushTask?.cancel()
         flushTask = Task { [weak self] in
             while !Task.isCancelled {
-                let nanos = UInt64(max(1, self?.recordIntervalSeconds ?? 1) * 1_000_000_000)
+                // Re-read each cycle so quiet-hours boundaries take effect without restart.
+                let seconds = max(1, self?.effectiveRecordIntervalSeconds ?? 1)
+                let nanos = UInt64(seconds * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: nanos)
                 await MainActor.run {
                     self?.flushPending(force: true)
@@ -192,7 +213,7 @@ extension WatchLocationManager: CLLocationManagerDelegate {
                 guard location.horizontalAccuracy >= 0 else { continue }
 
                 if let lastAcceptedAt,
-                   location.timestamp.timeIntervalSince(lastAcceptedAt) < recordIntervalSeconds {
+                   location.timestamp.timeIntervalSince(lastAcceptedAt) < effectiveRecordIntervalSeconds {
                     continue
                 }
 

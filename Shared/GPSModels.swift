@@ -48,7 +48,7 @@ public enum BridgeCommand: String, Codable, Sendable {
     case updateSettings
 }
 
-/// How often the Watch should keep / send a GPS sample (seconds).
+/// How often the Watch should keep / send a GPS sample (seconds) during active hours.
 public enum GPSRecordInterval: Int, CaseIterable, Codable, Sendable, Identifiable {
     case one = 1
     case three = 3
@@ -59,6 +59,86 @@ public enum GPSRecordInterval: Int, CaseIterable, Codable, Sendable, Identifiabl
 
     public var label: String {
         "每 \(rawValue) 秒"
+    }
+}
+
+/// Overnight (or same-day) window that uses a coarser GPS interval.
+public struct QuietHoursSchedule: Codable, Equatable, Sendable {
+    public var isEnabled: Bool
+    /// Minutes from local midnight, 0...1439 (e.g. 21:00 → 1260).
+    public var startMinutes: Int
+    /// Minutes from local midnight; may be earlier than start for overnight windows.
+    public var endMinutes: Int
+    /// Sample interval while inside the window (default 60 = once per minute).
+    public var intervalSeconds: Int
+
+    public static let `default` = QuietHoursSchedule(
+        isEnabled: true,
+        startMinutes: 21 * 60,
+        endMinutes: 7 * 60,
+        intervalSeconds: 60
+    )
+
+    public init(
+        isEnabled: Bool = true,
+        startMinutes: Int = 21 * 60,
+        endMinutes: Int = 7 * 60,
+        intervalSeconds: Int = 60
+    ) {
+        self.isEnabled = isEnabled
+        self.startMinutes = Self.clampMinutes(startMinutes)
+        self.endMinutes = Self.clampMinutes(endMinutes)
+        self.intervalSeconds = max(1, intervalSeconds)
+    }
+
+    public func contains(_ date: Date, calendar: Calendar = .current) -> Bool {
+        guard isEnabled else { return false }
+        let comps = calendar.dateComponents([.hour, .minute], from: date)
+        let minutes = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        if startMinutes == endMinutes {
+            return true
+        }
+        if startMinutes < endMinutes {
+            return minutes >= startMinutes && minutes < endMinutes
+        }
+        // Overnight, e.g. 21:00 → 07:00
+        return minutes >= startMinutes || minutes < endMinutes
+    }
+
+    public func effectiveIntervalSeconds(
+        base: Int,
+        at date: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Int {
+        guard contains(date, calendar: calendar) else { return max(1, base) }
+        return max(1, intervalSeconds)
+    }
+
+    public var startLabel: String { Self.timeLabel(startMinutes) }
+    public var endLabel: String { Self.timeLabel(endMinutes) }
+
+    public static func timeLabel(_ minutes: Int) -> String {
+        let m = clampMinutes(minutes)
+        return String(format: "%02d:%02d", m / 60, m % 60)
+    }
+
+    public static func clampMinutes(_ value: Int) -> Int {
+        let wrapped = value % (24 * 60)
+        return wrapped >= 0 ? wrapped : wrapped + 24 * 60
+    }
+
+    public static func minutes(from date: Date, calendar: Calendar = .current) -> Int {
+        let comps = calendar.dateComponents([.hour, .minute], from: date)
+        return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+    }
+
+    public static func date(fromMinutes minutes: Int, calendar: Calendar = .current, reference: Date = Date()) -> Date {
+        let m = clampMinutes(minutes)
+        var comps = calendar.dateComponents([.year, .month, .day], from: reference)
+        comps.hour = m / 60
+        comps.minute = m % 60
+        comps.second = 0
+        return calendar.date(from: comps) ?? reference
     }
 }
 
@@ -75,6 +155,7 @@ public struct BridgeEnvelope: Codable, Sendable {
     public let points: [GPSPoint]?
     public let status: WatchStatus?
     public let recordIntervalSeconds: Int?
+    public let quietHours: QuietHoursSchedule?
     public let sentAt: Date
 
     public init(
@@ -83,6 +164,7 @@ public struct BridgeEnvelope: Codable, Sendable {
         points: [GPSPoint]? = nil,
         status: WatchStatus? = nil,
         recordIntervalSeconds: Int? = nil,
+        quietHours: QuietHoursSchedule? = nil,
         sentAt: Date = Date()
     ) {
         self.kind = kind
@@ -90,6 +172,7 @@ public struct BridgeEnvelope: Codable, Sendable {
         self.points = points
         self.status = status
         self.recordIntervalSeconds = recordIntervalSeconds
+        self.quietHours = quietHours
         self.sentAt = sentAt
     }
 }

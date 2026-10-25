@@ -15,8 +15,8 @@ struct ContentView: View {
                     statusSection
                     .id(session.uiEpoch) // force redraw when WC/points update (Shortcuts window was freezing)
                     settingsSection
-                    controls
                     recentPoints
+                    bufferClear
                     shortcutsHint
                 }
                 .padding(20)
@@ -49,7 +49,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("設定")
                 .font(.headline)
-            Text("GPS 記錄間隔")
+            Text("GPS 記錄間隔（活躍時段）")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Picker("GPS 記錄間隔", selection: $settings.recordInterval) {
@@ -61,6 +61,60 @@ struct ContentView: View {
             Text("手錶依此間隔保留點位並傳回手機。變更後會同步到手錶。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Toggle("啟用非活躍時段", isOn: Binding(
+                get: { settings.quietHours.isEnabled },
+                set: { enabled in
+                    var next = settings.quietHours
+                    next.isEnabled = enabled
+                    settings.quietHours = next
+                }
+            ))
+
+            if settings.quietHours.isEnabled {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("開始")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        DatePicker(
+                            "開始",
+                            selection: Binding(
+                                get: { settings.quietStartDate },
+                                set: { settings.quietStartDate = $0 }
+                            ),
+                            displayedComponents: .hourAndMinute
+                        )
+                        .labelsHidden()
+                    }
+                    Spacer()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("結束")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        DatePicker(
+                            "結束",
+                            selection: Binding(
+                                get: { settings.quietEndDate },
+                                set: { settings.quietEndDate = $0 }
+                            ),
+                            displayedComponents: .hourAndMinute
+                        )
+                        .labelsHidden()
+                    }
+                }
+                Text("非活躍時段（預設 \(QuietHoursSchedule.default.startLabel)–\(QuietHoursSchedule.default.endLabel)）改為每 \(settings.quietHours.intervalSeconds) 秒定位一次。可跨午夜。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            statusRow(
+                title: "目前生效間隔",
+                value: settings.isInQuietHours
+                    ? "每 \(settings.effectiveRecordIntervalSeconds) 秒（非活躍）"
+                    : "每 \(settings.effectiveRecordIntervalSeconds) 秒（活躍）",
+                ok: true
+            )
 
             if monitor.isStale {
                 statusRow(
@@ -82,7 +136,7 @@ struct ContentView: View {
             statusRow(
                 title: "手錶 Companion",
                 value: watchCompanionLabel,
-                ok: session.hasWatchCompanion || session.isReachable
+                ok: session.isReachable || session.isWatchAppInstalled
             )
             statusRow(
                 title: "即時可達",
@@ -90,14 +144,19 @@ struct ContentView: View {
                 ok: session.isReachable
             )
             statusRow(
+                title: "手機記錄",
+                value: session.isExpectingTracking ? "開啟中" : "已停止",
+                ok: session.isExpectingTracking
+            )
+            statusRow(
                 title: "Watch 定位中",
-                value: session.watchStatus.isTracking ? "是" : "否",
-                ok: session.watchStatus.isTracking
+                value: watchTrackingLabel,
+                ok: session.watchStatus.isTracking && session.hasFreshPoints
             )
             statusRow(
                 title: "最後訊號",
                 value: lastSignalLabel,
-                ok: !monitor.isStale
+                ok: session.hasFreshPoints
             )
 
             if monitor.isStale {
@@ -116,8 +175,37 @@ struct ContentView: View {
                     .foregroundStyle(Color("AlertClay"))
             }
 
+            trackingControls
+
             storageSection
         }
+    }
+
+    private var trackingControls: some View {
+        VStack(spacing: 12) {
+            Button {
+                Task { await session.wakeWatchAndStartTracking() }
+            } label: {
+                Text("開始手機記錄（喚醒手錶）")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(session.isExpectingTracking)
+
+            HStack(spacing: 12) {
+                Button("停止") {
+                    session.stopTrackingOnWatch()
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(!session.isExpectingTracking)
+
+                Button("重新查詢") {
+                    Task { await session.pingWatch() }
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+        }
+        .padding(.top, 4)
     }
 
     private var storageSection: some View {
@@ -186,14 +274,14 @@ struct ContentView: View {
         switch session.progress {
         case .idle: return "pause.circle"
         case .receiving: return "antenna.radiowaves.left.and.right"
-        case .failed: return "exclamationmark.triangle.fill"
+        case .expectingNoSignal, .failed: return "exclamationmark.triangle.fill"
         default: return "ellipsis.circle"
         }
     }
 
     private var progressColor: Color {
         switch session.progress {
-        case .failed: return Color("AlertClay")
+        case .failed, .expectingNoSignal: return Color("AlertClay")
         case .receiving: return Color("BrandInk")
         case .idle: return .secondary
         default: return Color("BrandInk")
@@ -211,17 +299,33 @@ struct ContentView: View {
     }
 
     private var watchCompanionLabel: String {
-        if session.isReachable || session.hasWatchCompanion {
-            return "已安裝／可通訊"
+        if session.isReachable {
+            return "即時可通訊"
+        }
+        if session.isWatchAppInstalled {
+            return "已安裝（未即時可達）"
         }
         if !session.isWatchPaired {
             return "未配對手錶"
         }
-        if session.isWatchAppInstalled {
-            return "已安裝"
+        if let contact = session.lastCompanionContactAt {
+            let formatter = RelativeDateTimeFormatter()
+            formatter.locale = Locale(identifier: "zh_TW")
+            formatter.unitsStyle = .short
+            let ago = formatter.localizedString(for: contact, relativeTo: Date())
+            return "系統回報未安裝（上次通訊 \(ago)）"
         }
-        // System flag is often wrong on TestFlight; don't scare if Watch itself says connected.
-        return "系統回報未安裝（若手錶顯示已連線可忽略）"
+        return "系統回報未安裝／無法通訊"
+    }
+
+    private var watchTrackingLabel: String {
+        if session.watchStatus.isTracking, session.hasFreshPoints {
+            return "是（有近期點位）"
+        }
+        if session.watchStatus.isTracking {
+            return "手錶回報是（但點位已過期）"
+        }
+        return "否"
     }
 
     private func statusRow(title: String, value: String, ok: Bool) -> some View {
@@ -236,33 +340,11 @@ struct ContentView: View {
         .font(.subheadline)
     }
 
-    private var controls: some View {
-        VStack(spacing: 12) {
-            Button {
-                Task { await session.wakeWatchAndStartTracking() }
-            } label: {
-                Text("開始手機記錄（喚醒手錶）")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(PrimaryButtonStyle())
-
-            HStack(spacing: 12) {
-                Button("停止") {
-                    session.stopTrackingOnWatch()
-                }
-                .buttonStyle(SecondaryButtonStyle())
-
-                Button("重新查詢") {
-                    Task { await session.pingWatch() }
-                }
-                .buttonStyle(SecondaryButtonStyle())
-            }
-
-            Button("清除畫面緩衝（不刪 iCloud 檔）", role: .destructive) {
-                recorder.clearRecentBuffer()
-            }
-            .font(.footnote)
+    private var bufferClear: some View {
+        Button("清除畫面緩衝（不刪 iCloud 檔）", role: .destructive) {
+            recorder.clearRecentBuffer()
         }
+        .font(.footnote)
     }
 
     private var recentPoints: some View {
@@ -309,7 +391,7 @@ struct ContentView: View {
             Text("Mac 處理")
                 .font(.headline)
                 .padding(.top, 8)
-            Text("軌跡同步到 iCloud 後，在 Mac 執行 python tools/geotag_app.py：選軌跡／照片目錄與時區，修正 EXIF 時間後寫入 GPS。")
+            Text("軌跡以 GPX 寫入 iCloud。Mac 用「精確定位 Geotag」App（scheme PreciseGeotagMac）選軌跡／照片目錄與時區寫入 GPS，並可 GPX ⇄ 舊 JSON 互轉。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -333,24 +415,36 @@ private struct PageBackground: View {
 }
 
 private struct PrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.headline)
             .padding(.vertical, 14)
-            .foregroundStyle(.white)
-            .background(Color("BrandInk").opacity(configuration.isPressed ? 0.8 : 1))
+            .foregroundStyle(.white.opacity(isEnabled ? 1 : 0.85))
+            .background(
+                Color("BrandInk").opacity(
+                    !isEnabled ? 0.35 : (configuration.isPressed ? 0.8 : 1)
+                )
+            )
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
 private struct SecondaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .frame(maxWidth: .infinity)
             .font(.subheadline.weight(.semibold))
             .padding(.vertical, 12)
-            .foregroundStyle(Color("BrandInk"))
-            .background(Color.white.opacity(configuration.isPressed ? 0.5 : 0.75))
+            .foregroundStyle(Color("BrandInk").opacity(isEnabled ? 1 : 0.4))
+            .background(
+                Color.white.opacity(
+                    !isEnabled ? 0.4 : (configuration.isPressed ? 0.5 : 0.75)
+                )
+            )
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }

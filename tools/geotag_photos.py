@@ -36,7 +36,7 @@ from geotag_lib import (  # noqa: E402
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="修正照片時區並寫入 EXIF GPS（精確定位軌跡）"
+        description="修正照片時區並寫入 EXIF GPS（精確定位 GPX／舊 JSON 軌跡；正式請用 Mac App PreciseGeotagMac）"
     )
     parser.add_argument("--tracks", type=Path, default=default_tracks_dir())
     parser.add_argument("--photos", type=Path, required=True)

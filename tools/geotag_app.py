@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Mac GUI：指定軌跡／照片目錄與時區，修正 EXIF 時間後對應 GPS。"""
+"""Mac GUI（tkinter，開發用）：指定軌跡／照片目錄與時區，修正 EXIF 時間後對應 GPS。
+
+正式用途請改用原生 macOS App「精確定位 Geotag」（Xcode scheme：PreciseGeotagMac），
+可上架 Mac App Store，並支援 GPX ⇄ geotag JSON 互轉。
+"""
 
 from __future__ import annotations
 

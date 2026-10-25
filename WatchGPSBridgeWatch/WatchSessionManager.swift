@@ -111,6 +111,9 @@ final class WatchSessionManager: NSObject, ObservableObject {
         if let seconds = envelope.recordIntervalSeconds {
             locationManager?.setRecordIntervalSeconds(seconds)
         }
+        if let quietHours = envelope.quietHours {
+            locationManager?.setQuietHours(quietHours)
+        }
 
         switch command {
         case .startTracking:

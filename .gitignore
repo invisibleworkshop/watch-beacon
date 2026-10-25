@@ -1,6 +1,7 @@
 # Xcode
 WatchGPSBridge.xcodeproj/
 DerivedData/
+.derivedData/
 build/
 *.xcuserstate
 *.xccheckout

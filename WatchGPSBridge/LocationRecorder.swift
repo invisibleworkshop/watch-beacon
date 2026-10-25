@@ -1,6 +1,6 @@
 import Foundation
 
-/// Continuously records Watch GPS into rotating JSON files on iCloud Drive
+/// Continuously records Watch GPS into rotating GPX files on iCloud Drive
 /// (one new file every ``TrackChunkFile.pointsPerFile`` points) so a Mac can process them later.
 @MainActor
 final class LocationRecorder: ObservableObject {
@@ -22,13 +22,6 @@ final class LocationRecorder: ObservableObject {
     private var currentFileURL: URL?
     private var currentFileCreatedAt = Date()
     private var iCloudRetryAttempts = 0
-
-    private let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        return encoder
-    }()
 
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -64,7 +57,6 @@ final class LocationRecorder: ObservableObject {
                 persistCurrentFile()
             }
             try? FileManager.default.removeItem(at: oldURL)
-            // Cold start often resolves iCloud late — pick up the open track there.
             if hadOnlyEmptyLocal || currentBatch.isEmpty {
                 currentFileURL = nil
                 currentFileName = nil
@@ -89,7 +81,6 @@ final class LocationRecorder: ObservableObject {
         var knownIDs = Set(currentBatch.map(\.id)).union(Set(recentPoints.map(\.id)))
 
         for point in batch {
-            // WatchConnectivity can deliver the same batch twice (message + context/userInfo).
             if knownIDs.contains(point.id) { continue }
             if let last = currentBatch.last,
                abs(point.timestamp.timeIntervalSince(last.timestamp)) < 0.05,
@@ -116,7 +107,6 @@ final class LocationRecorder: ObservableObject {
         UserDefaults.standard.set(totalPointsRecorded, forKey: PersistenceKey.totalPoints)
     }
 
-    /// Clears only the on-screen buffer. Completed iCloud track files are kept.
     func clearRecentBuffer() {
         recentPoints.removeAll()
     }
@@ -136,7 +126,7 @@ final class LocationRecorder: ObservableObject {
             ensureDirectory(tracks)
             tracksDirectory = tracks
             isUsingiCloud = true
-            storageDescription = "iCloud Drive → 精確定位 → Documents → Tracks"
+            storageDescription = "iCloud Drive → 精確定位 → Documents → Tracks（GPX）"
             return
         }
 
@@ -145,7 +135,7 @@ final class LocationRecorder: ObservableObject {
         ensureDirectory(local)
         tracksDirectory = local
         isUsingiCloud = false
-        storageDescription = "本機 Documents/Tracks（等待 iCloud；請確認已登入並在 Xcode 啟用 iCloud）"
+        storageDescription = "本機 Documents/Tracks（GPX；等待 iCloud）"
     }
 
     private func scheduleiCloudRetry() {
@@ -161,7 +151,6 @@ final class LocationRecorder: ObservableObject {
         }
     }
 
-    /// After Shortcuts / process death: continue the open track file instead of starting a blank "second instance".
     @discardableResult
     private func resumeOpenFileIfPossible() -> Bool {
         guard let tracksDirectory else { return false }
@@ -174,15 +163,17 @@ final class LocationRecorder: ObservableObject {
             }
         }
 
-        // Fallback: newest incomplete JSON in Tracks.
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: tracksDirectory,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else { return false }
 
-        let jsonFiles = files.filter { $0.pathExtension.lowercased() == "json" }
-        let sorted = jsonFiles.sorted { a, b in
+        let trackFiles = files.filter {
+            let ext = $0.pathExtension.lowercased()
+            return ext == "gpx" || ext == "json"
+        }
+        let sorted = trackFiles.sorted { a, b in
             let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             return da > db
@@ -197,20 +188,45 @@ final class LocationRecorder: ObservableObject {
     }
 
     private func loadFileForResume(_ url: URL) -> Bool {
-        guard let data = try? Data(contentsOf: url),
-              let document = try? decoder.decode(TrackChunkFile.self, from: data)
-        else { return false }
+        let ext = url.pathExtension.lowercased()
+        let points: [GPSPoint]
+        let createdAt: Date
 
-        // Full files are finished; don't append more to them.
-        guard document.points.count < Self.pointsPerFile else { return false }
+        if ext == "gpx" {
+            guard let data = try? Data(contentsOf: url),
+                  let decoded = try? GPXCodec.decode(data: data)
+            else { return false }
+            points = decoded
+            createdAt = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+        } else if ext == "json" {
+            // Legacy geotag JSON — resume then rewrite as GPX on next persist.
+            guard let data = try? Data(contentsOf: url),
+                  let document = try? decoder.decode(TrackChunkFile.self, from: data)
+            else { return false }
+            points = document.points
+            createdAt = document.createdAt
+        } else {
+            return false
+        }
 
-        currentFileURL = url
-        currentFileName = url.lastPathComponent
-        currentFileCreatedAt = document.createdAt
-        currentBatch = document.points
-        currentFilePointCount = document.points.count
-        recentPoints = Array(document.points.suffix(40))
+        guard points.count < Self.pointsPerFile else { return false }
+
+        // If resuming legacy JSON, switch active file to GPX path.
+        if ext == "json" {
+            let gpxName = url.deletingPathExtension().lastPathComponent + ".gpx"
+            let gpxURL = url.deletingLastPathComponent().appendingPathComponent(gpxName)
+            currentFileURL = gpxURL
+            currentFileName = gpxName
+        } else {
+            currentFileURL = url
+            currentFileName = url.lastPathComponent
+        }
+        currentFileCreatedAt = createdAt
+        currentBatch = points
+        currentFilePointCount = points.count
+        recentPoints = Array(points.suffix(40))
         UserDefaults.standard.set(currentFileName, forKey: PersistenceKey.activeFileName)
+        persistCurrentFile()
         return true
     }
 
@@ -225,11 +241,18 @@ final class LocationRecorder: ObservableObject {
 
         var total = 0
         var completed = 0
-        for url in files where url.pathExtension.lowercased() == "json" {
-            guard let data = try? Data(contentsOf: url),
-                  let document = try? decoder.decode(TrackChunkFile.self, from: data)
-            else { continue }
-            total += document.points.count
+        for url in files {
+            let ext = url.pathExtension.lowercased()
+            let count: Int?
+            if ext == "gpx" {
+                count = (try? GPXCodec.decode(data: Data(contentsOf: url)))?.count
+            } else if ext == "json" {
+                count = (try? decoder.decode(TrackChunkFile.self, from: Data(contentsOf: url)))?.points.count
+            } else {
+                count = nil
+            }
+            guard let count else { continue }
+            total += count
             if url.lastPathComponent != currentFileName {
                 completed += 1
             }
@@ -244,7 +267,7 @@ final class LocationRecorder: ObservableObject {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let name = "track-\(stamp)-part\(String(format: "%04d", completedFileCount + 1)).json"
+        let name = "track-\(stamp)-part\(String(format: "%04d", completedFileCount + 1)).gpx"
         let url = tracksDirectory.appendingPathComponent(name)
         currentFileURL = url
         currentFileName = name
@@ -264,9 +287,12 @@ final class LocationRecorder: ObservableObject {
 
     private func persistCurrentFile() {
         guard let currentFileURL else { return }
-        let document = TrackChunkFile(createdAt: currentFileCreatedAt, points: currentBatch)
         do {
-            let data = try encoder.encode(document)
+            let data = GPXCodec.encodeData(
+                points: currentBatch,
+                name: currentFileName ?? "精確定位",
+                createdAt: currentFileCreatedAt
+            )
             try data.write(to: currentFileURL, options: [.atomic])
         } catch {
             lastError = "寫入失敗：\(error.localizedDescription)"

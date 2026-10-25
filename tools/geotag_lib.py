@@ -100,13 +100,49 @@ def parse_iso8601(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _load_points_from_gpx(path: Path, log: Optional[LogFn] = None) -> List[TrackPoint]:
+    import re
+    from xml.etree import ElementTree as ET
+
+    text = path.read_text(encoding="utf-8")
+    # Strip default namespace for simpler parsing
+    text = re.sub(r'\sxmlns="[^"]+"', "", text, count=1)
+    root = ET.fromstring(text)
+    points: List[TrackPoint] = []
+    for trkpt in root.findall(".//trkpt"):
+        try:
+            lat = float(trkpt.attrib["lat"])
+            lon = float(trkpt.attrib["lon"])
+            ele_el = trkpt.find("ele")
+            time_el = trkpt.find("time")
+            acc_el = trkpt.find(".//{*}horizontalAccuracy")
+            if acc_el is None:
+                acc_el = trkpt.find(".//horizontalAccuracy")
+            points.append(
+                TrackPoint(
+                    timestamp=parse_iso8601(time_el.text) if time_el is not None and time_el.text else datetime.now(timezone.utc),
+                    latitude=lat,
+                    longitude=lon,
+                    altitude=float(ele_el.text) if ele_el is not None and ele_el.text else 0.0,
+                    horizontal_accuracy=float(acc_el.text) if acc_el is not None and acc_el.text else -1.0,
+                )
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            if log:
+                log(f"略過損壞 GPX 點位 ({path.name}): {exc}")
+    return points
+
+
 def load_tracks(tracks_dir: Path, log: Optional[LogFn] = None) -> List[TrackPoint]:
-    files = sorted(tracks_dir.glob("*.json"))
+    files = sorted(list(tracks_dir.glob("*.gpx")) + list(tracks_dir.glob("*.json")))
     if not files:
-        raise FileNotFoundError(f"在 {tracks_dir} 找不到 *.json 軌跡檔")
+        raise FileNotFoundError(f"在 {tracks_dir} 找不到 *.gpx／*.json 軌跡檔")
 
     points: List[TrackPoint] = []
     for path in files:
+        if path.suffix.lower() == ".gpx":
+            points.extend(_load_points_from_gpx(path, log=log))
+            continue
         with path.open("r", encoding="utf-8") as fh:
             payload = json.load(fh)
         raw_points = payload.get("points", payload if isinstance(payload, list) else [])
