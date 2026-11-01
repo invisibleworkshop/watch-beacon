@@ -151,7 +151,8 @@ struct ContentView: View {
             statusRow(
                 title: "Watch 定位中",
                 value: watchTrackingLabel,
-                ok: session.watchStatus.isTracking && session.hasFreshPoints
+                ok: session.watchStatus.isTracking
+                    && (session.hasFreshPoints || session.watchStatus.pendingUploadCount > 0)
             )
             statusRow(
                 title: "最後訊號",
@@ -319,11 +320,18 @@ struct ContentView: View {
     }
 
     private var watchTrackingLabel: String {
+        let pending = session.watchStatus.pendingUploadCount
+        if pending > 0 {
+            if session.hasFreshPoints {
+                return "是（補傳中 \(pending)）"
+            }
+            return "補傳中（待上傳 \(pending)）"
+        }
         if session.watchStatus.isTracking, session.hasFreshPoints {
             return "是（有近期點位）"
         }
         if session.watchStatus.isTracking {
-            return "手錶回報是（但點位已過期）"
+            return "手錶回報是（暫無近期點位）"
         }
         return "否"
     }

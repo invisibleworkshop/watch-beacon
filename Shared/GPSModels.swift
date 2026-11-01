@@ -184,6 +184,8 @@ public struct WatchStatus: Codable, Sendable, Equatable {
     public var lastAccuracy: Double?
     public var workoutActive: Bool
     public var watchReachableNote: String?
+    /// Points queued on Watch awaiting WatchConnectivity delivery (offline catch-up).
+    public var pendingUploadCount: Int
 
     public init(
         isTracking: Bool = false,
@@ -191,7 +193,8 @@ public struct WatchStatus: Codable, Sendable, Equatable {
         lastFixAt: Date? = nil,
         lastAccuracy: Double? = nil,
         workoutActive: Bool = false,
-        watchReachableNote: String? = nil
+        watchReachableNote: String? = nil,
+        pendingUploadCount: Int = 0
     ) {
         self.isTracking = isTracking
         self.authorization = authorization
@@ -199,6 +202,23 @@ public struct WatchStatus: Codable, Sendable, Equatable {
         self.lastAccuracy = lastAccuracy
         self.workoutActive = workoutActive
         self.watchReachableNote = watchReachableNote
+        self.pendingUploadCount = max(0, pendingUploadCount)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case isTracking, authorization, lastFixAt, lastAccuracy
+        case workoutActive, watchReachableNote, pendingUploadCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        isTracking = try c.decodeIfPresent(Bool.self, forKey: .isTracking) ?? false
+        authorization = try c.decodeIfPresent(String.self, forKey: .authorization) ?? "unknown"
+        lastFixAt = try c.decodeIfPresent(Date.self, forKey: .lastFixAt)
+        lastAccuracy = try c.decodeIfPresent(Double.self, forKey: .lastAccuracy)
+        workoutActive = try c.decodeIfPresent(Bool.self, forKey: .workoutActive) ?? false
+        watchReachableNote = try c.decodeIfPresent(String.self, forKey: .watchReachableNote)
+        pendingUploadCount = max(0, try c.decodeIfPresent(Int.self, forKey: .pendingUploadCount) ?? 0)
     }
 }
 

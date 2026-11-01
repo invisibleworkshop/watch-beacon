@@ -361,7 +361,7 @@ final class PhoneSessionManager: ObservableObject {
         bumpUI()
     }
 
-    private func bumpUI() {
+    fileprivate func bumpUI() {
         uiEpoch &+= 1
     }
 
@@ -411,16 +411,23 @@ final class PhoneSessionManager: ObservableObject {
             let payload: [String: Any] = [BridgeKeys.payload: data]
 
             if session.isReachable {
-                session.sendMessage(payload, replyHandler: { _ in }, errorHandler: { [weak self] error in
+                session.sendMessage(payload, replyHandler: { [weak self] _ in
                     Task { @MainActor in
-                        self?.lastError = error.localizedDescription
+                        self?.lastError = nil
+                        self?.bumpUI()
+                    }
+                }, errorHandler: { [weak self] _ in
+                    Task { @MainActor in
+                        // Realtime failed; background transfer still delivers — don't latch sticky WC noise.
                         self?.session?.transferUserInfo(payload)
+                        self?.lastError = nil
                         self?.bumpUI()
                     }
                 })
             } else {
                 session.transferUserInfo(payload)
                 try? session.updateApplicationContext(payload)
+                lastError = nil
             }
         } catch {
             lastError = error.localizedDescription
@@ -444,6 +451,7 @@ final class PhoneSessionManager: ObservableObject {
 
             lastReceivedAt = Date()
             lastCompanionContactAt = Date()
+            lastError = nil
             persistExpectation()
             recorder.append(points)
             onPointsReceived?(points)
@@ -486,7 +494,10 @@ private final class PhoneWCSessionBridge: NSObject, WCSessionDelegate {
             owner?.drainReceivedApplicationContextFromBridge()
             if let error {
                 owner?.lastError = error.localizedDescription
+            } else if activationState == .activated {
+                owner?.lastError = nil
             }
+            owner?.bumpUI()
         }
     }
 
@@ -519,9 +530,10 @@ private final class PhoneWCSessionBridge: NSObject, WCSessionDelegate {
         didReceiveMessage message: [String: Any],
         replyHandler: @escaping ([String: Any]) -> Void
     ) {
+        // Reply first — delayed handlers make Watch sendMessage time out.
+        replyHandler(["ok": true])
         Task { @MainActor in
             owner?.handleIncoming(message)
-            replyHandler(["ok": true])
         }
     }
 

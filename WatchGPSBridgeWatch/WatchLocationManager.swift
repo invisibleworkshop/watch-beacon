@@ -211,6 +211,8 @@ extension WatchLocationManager: CLLocationManagerDelegate {
             for location in locations {
                 // Skip clearly invalid / coarse cellular-only fixes when possible.
                 guard location.horizontalAccuracy >= 0 else { continue }
+                // Skip ancient cached fixes after wake / reconnect (not useful as “now”).
+                guard location.timestamp.timeIntervalSinceNow > -120 else { continue }
 
                 if let lastAcceptedAt,
                    location.timestamp.timeIntervalSince(lastAcceptedAt) < effectiveRecordIntervalSeconds {
@@ -243,13 +245,26 @@ extension WatchLocationManager: CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         Task { @MainActor in
-            // kCLErrorDomain 0 = locationUnknown: GPS still acquiring; not a real failure.
-            // Common outdoors while first fix comes in — points may already be flowing to iPhone.
-            if let clError = error as? CLError, clError.code == .locationUnknown {
-                if lastPoint == nil, lastError == nil {
-                    lastError = "正在取得 GPS…"
+            if let clError = error as? CLError {
+                switch clError.code {
+                case .locationUnknown:
+                    // GPS still acquiring — not a real failure.
+                    if lastPoint == nil, lastError == nil {
+                        lastError = "正在取得 GPS…"
+                    }
+                    return
+                case .deferredFailed, .deferredCanceled, .deferredAccuracyTooLow,
+                     .deferredDistanceFiltered, .deferredNotUpdatingLocation:
+                    // Deferred-update noise; ignore while we use continuous updates.
+                    return
+                default:
+                    // historicalLocationError and similar: soft if we already have a recent fix.
+                    if lastPoint != nil,
+                       let lastFix = lastPoint?.timestamp,
+                       Date().timeIntervalSince(lastFix) < 120 {
+                        return
+                    }
                 }
-                return
             }
             lastError = error.localizedDescription
             publishStatus()
